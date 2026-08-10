@@ -1,0 +1,77 @@
+source:
+  # How you reach the instance. This is not cosmetic — see the note under `gcp`.
+  #   auth_proxy  the Cloud SQL Auth Proxy running locally (recommended for scanning)
+  #   public_ip   the instance's public IP, with your address in its authorized networks
+  #   private_ip  over VPC peering or Private Service Connect
+  connection_method: auth_proxy
+
+  # With auth_proxy, point at the proxy's loopback socket:
+  #   cloud-sql-proxy --port 3306 PROJECT:REGION:INSTANCE
+  host: 127.0.0.1
+  port: 3306
+  user: tishift_ro
+  password: ${TISHIFT_SOURCE_PASSWORD}
+  database: myapp
+
+  # The Auth Proxy terminates TLS itself and exposes a plaintext loopback
+  # socket, so `false` is correct here — it is not a downgrade. For public_ip
+  # or private_ip set `true` and supply the server CA below.
+  tls: false
+  # ssl_ca: config/server-ca.pem
+  #   gcloud sql ssl server-ca-certs list --instance=INSTANCE
+
+gcp:
+  # Optional, but filling these in is what turns generic advice into commands
+  # you can paste: reports render exact `gcloud sql instances patch` and
+  # `gcloud sql export` invocations instead of <INSTANCE> placeholders.
+  project: my-project
+  instance: my-instance
+  region: us-central1
+  # Bucket for `gcloud sql export`. Grant the INSTANCE's service account
+  # roles/storage.objectAdmin on it — the export runs as the instance, not as you.
+  export_bucket: gs://my-migration-bucket
+
+target:
+  host: gateway01.us-east-1.prod.aws.tidbcloud.com
+  port: 4000
+  user: root
+  password: ${TISHIFT_TARGET_PASSWORD}
+  database: myapp
+  tls: true
+  # ssl_ca: /etc/ssl/cert.pem   # TiDB Cloud Starter/Essential use the system CA bundle
+  # Tier: starter, essential, dedicated, or self-hosted.
+  #   starter    free up to 25 GiB; cutover only, no continue replication;
+  #              the only tier with real FULLTEXT index support
+  #   essential  autoscaling, DM-based continue replication
+  #   dedicated  full HTAP (TiFlash), Lightning, DM
+  tier: essential
+
+output:
+  dir: ./tishift-reports
+  formats: [cli, json, md]
+
+logging:
+  level: info
+  file: tishift-cloudsql.log
+
+metrics:
+  enabled: false
+  port: 9090
+
+# Before planning continue replication (Phase 7 / docs/sync-guide.md), note two
+# things that catch people out on Cloud SQL specifically:
+#
+# 1. TiDB Cloud DM CANNOT connect through the Auth Proxy. The proxy is a local
+#    client-side connector; DM is a managed service with nowhere to run it.
+#    Phase 7 needs public IP + authorized networks, or private IP + VPC peering
+#    / Private Service Connect.
+#
+# 2. `SET GLOBAL` fails on every binlog variable — no user has SUPER. Binary
+#    logging is enabled with `gcloud sql instances patch <INSTANCE>
+#    --enable-bin-log` (which requires automatic backups), and retention with
+#    `--retained-transaction-log-days=7`. `binlog_row_image` is a database flag;
+#    `binlog_format` is not user-configurable at all (Cloud SQL forces ROW).
+#
+#    Beware: `--database-flags` REPLACES the instance's whole flag list. Run
+#    `gcloud sql instances describe <INSTANCE>
+#    --format='value(settings.databaseFlags)'` first.
