@@ -18,6 +18,7 @@ TiShift automates the heavy lifting of migrating from legacy databases to TiDB C
 | **Aurora MySQL** | TiDB Cloud (Starter, Essential, Dedicated) | Active |
 | **Cloud Firestore** | TiDB Cloud (Starter, Essential, Dedicated, BYOC on GCP) | Active |
 | **MySQL HeatWave** | TiDB Cloud (Starter, Essential, Dedicated) | Active |
+| **Cloud SQL for MySQL** | TiDB Cloud (Starter, Essential, Dedicated) | Active |
 
 ## How It Works
 
@@ -114,6 +115,12 @@ cd TiShift
 
 ```
 /heatwave-to-tidb
+```
+
+#### Cloud SQL for MySQL to TiDB Cloud
+
+```
+/cloudsql-to-tidb
 ```
 
 The skill will walk you through each phase — connecting to your databases, scanning the source schema, assessing compatibility, converting DDL, loading data, and validating the result. Follow the prompts; no additional setup is required.
@@ -335,6 +342,36 @@ tishift-heatwave load --config tishift-heatwave.yaml --strategy auto
 tishift-heatwave check --config tishift-heatwave.yaml
 ```
 
+### Cloud SQL for MySQL to TiDB Cloud
+
+```bash
+cd cloudsql-to-tidb
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'
+
+cp config/tishift-cloudsql.example.yaml tishift-cloudsql.yaml
+# Edit with your Cloud SQL and TiDB credentials, then start the Auth Proxy:
+#   cloud-sql-proxy --port 3306 PROJECT:REGION:INSTANCE
+# Note: the Auth Proxy is a local connector — TiDB Cloud DM cannot use it.
+# Plan a public or private IP path if you need continue replication.
+
+# Scan and assess — covers the Cloud SQL platform surface (IAM database users,
+# DEFINER principals, mysql.heartbeat, replication topology, binlog settings)
+tishift-cloudsql scan --config tishift-cloudsql.yaml --format cli --format json
+
+# Add DM readiness checks (binlog rules + valid-index precheck) to the score
+tishift-cloudsql scan --config tishift-cloudsql.yaml --continue-replication
+
+# Convert schema (strips DEFINER clauses, rewrites non-InnoDB engines and
+# utf8/utf8mb3 charsets, inlines TiFlash replica DDL after FULLTEXT tables)
+tishift-cloudsql convert --ddl-file source-schema.sql --dry-run
+
+# Load is intentionally disabled; check and sync are documented but not
+# automated. All three exit non-zero and point at their runbook.
+tishift-cloudsql load --config tishift-cloudsql.yaml
+tishift-cloudsql check --config tishift-cloudsql.yaml
+```
+
 ### Cloud Firestore to TiDB Cloud
 
 ```bash
@@ -416,6 +453,9 @@ cd firestore-to-tidb && pytest tests -q
 
 # HeatWave toolkit
 cd heatwave-to-tidb && pytest tests -q
+
+# Cloud SQL toolkit
+cd cloudsql-to-tidb && pytest tests -q
 ```
 
 ## Project Structure
@@ -532,6 +572,21 @@ TiShift/
 │   │   ├── core/sync/          Continue replication via TiDB DM (binlog replication)
 │   │   └── rules/              Type mapping, compatibility rules, scoring
 │   └── tests/                  Unit tests
+│
+├── cloudsql-to-tidb/           Cloud SQL for MySQL → TiDB Cloud migration
+│   ├── SKILL.md                AI skill (interactive migration guide)
+│   ├── references/             Compatibility rules, type mappings, GCS load
+│   │                           strategies, scoring
+│   ├── docs/                   Per-phase operator guides + flat checklist
+│   ├── tishift_cloudsql/       Python CLI toolkit
+│   │   ├── gcloud.py           Renders the gcloud commands quoted in reports
+│   │   ├── core/scan/          Platform/IAM/topology collectors, schema inventory
+│   │   ├── core/convert/       CSQL-DDL transforms, TiFlash emission
+│   │   ├── core/load/          Intentionally disabled (see docs/load-guide.md)
+│   │   ├── core/check/         Documented, not yet automated
+│   │   ├── core/sync/          DM prechecks — documented, not yet automated
+│   │   └── rules/              Compatibility, binlog, DDL cleanup, scoring
+│   └── tests/                  Unit tests (offline, no database required)
 │
 └── LICENSE                     Apache 2.0
 ```
