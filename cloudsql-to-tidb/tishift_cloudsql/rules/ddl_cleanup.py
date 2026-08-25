@@ -53,14 +53,37 @@ def _to_innodb(_matched: str) -> str:
 _UTF8_PREFIX = re.compile(r"\butf8(?:mb3)?(?![0-9A-Za-z])", re.I)
 
 
-def _widen_utf8(matched: str) -> str:
-    """Rewrite utf8/utf8mb3 to utf8mb4 in place, preserving the rest of the clause.
+# The collation utf8mb3/utf8 defaults to on MySQL. Its closest utf8mb4
+# equivalent is utf8mb4_general_ci — same algorithm, same case-insensitivity.
+_IMPLIED_SOURCE_COLLATION = "utf8mb4_general_ci"
+_HAS_COLLATE = re.compile(r"\bCOLLATE\b", re.I)
 
-    Textual rather than table-driven because the collation suffix carries
-    through unchanged: utf8_general_ci -> utf8mb4_general_ci,
-    utf8mb3_bin -> utf8mb4_bin.
+
+def _widen_utf8(matched: str) -> str:
+    """Rewrite utf8/utf8mb3 to utf8mb4, pinning the collation explicitly.
+
+    The textual part is easy: the collation suffix carries through unchanged,
+    utf8_general_ci -> utf8mb4_general_ci, utf8mb3_bin -> utf8mb4_bin.
+
+    The part that is not easy, and that silently corrupted a real migration
+    before this was fixed: a charset clause with **no** COLLATE inherits the
+    server's default for that charset, and the two servers do not agree.
+    `CHARSET=utf8mb3` means utf8mb3_general_ci (case-INsensitive) on MySQL;
+    rewritten to a bare `CHARSET=utf8mb4` it becomes utf8mb4_bin
+    (case-SENSITIVE) on TiDB, because that is TiDB's default for utf8mb4.
+
+    That flips `WHERE name = 'Foo'` and, worse, flips what a UNIQUE key
+    rejects — a column that could not hold both 'Foo' and 'foo' suddenly can.
+    So when the source left the collation implicit, we make it explicit rather
+    than letting the target pick.
     """
-    return _UTF8_PREFIX.sub("utf8mb4", matched)
+    widened = _UTF8_PREFIX.sub("utf8mb4", matched)
+    if _HAS_COLLATE.search(widened):
+        return widened
+    # Match the separator style already in use: `CHARSET=x` -> `COLLATE=y`,
+    # `CHARACTER SET x` -> `COLLATE y`.
+    separator = "=" if "=" in widened else " "
+    return f"{widened} COLLATE{separator}{_IMPLIED_SOURCE_COLLATION}"
 
 
 # Clause-level rules. Each pattern optionally consumes a preceding comma so
@@ -116,9 +139,15 @@ CLAUSE_RULES: list[CleanupRule] = [
         risk="assess",
         action_taken="rewritten",
         auto_cleanable="yes",
+        # The charset branch deliberately swallows a *following* COLLATE so the
+        # pair is one match. Without that, `_widen_utf8` sees the charset alone,
+        # decides the collation was implicit, and appends a default next to the
+        # sibling COLLATE the statement already had — two collations on one
+        # column. Ordered alternation matters: the charset branch is tried first.
         pattern=re.compile(
-            r"\b(?:(?:DEFAULT\s+)?(?:CHARACTER\s+SET|CHARSET)\s*=?\s*utf8(?:mb3)?"
-            r"|COLLATE\s*=?\s*utf8(?:mb3)?_\w+)\b",
+            r"\b(?:DEFAULT\s+)?(?:CHARACTER\s+SET|CHARSET)\s*=?\s*utf8(?:mb3)?(?![0-9A-Za-z])"
+            r"(?:\s+COLLATE\s*=?\s*utf8(?:mb3)?_\w+)?"
+            r"|\bCOLLATE\s*=?\s*utf8(?:mb3)?_\w+\b",
             re.I,
         ),
         replacement=_widen_utf8,

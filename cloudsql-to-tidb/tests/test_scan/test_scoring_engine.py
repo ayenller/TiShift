@@ -262,3 +262,14 @@ def test_overall_is_the_sum_of_categories() -> None:
     )
     score = compute_readiness_score(_ctx(inv))
     assert score.overall == sum(c.score for c in score.categories)
+
+
+def test_fk_without_unique_parent_index_is_reported_with_no_penalty() -> None:
+    # Verified on TiDB v8.5.3: these foreign keys are accepted AND enforced, so
+    # they cost nothing against *this* target. They are still surfaced, because
+    # MySQL 8.0.16+ rejects them and that breaks rollback/staging portability.
+    inv = SchemaInventory(fks_without_unique_parent_index=["child.fk1 -> parent(a)"])
+    score = compute_readiness_score(_ctx(inv))
+    cat = _category(score, "Cloud SQL platform surface")
+    assert cat.score == CATEGORY_MAX_POINTS["Cloud SQL platform surface"]
+    assert any("-0:" in d and "CSQL-WARNING-14" in d for d in cat.deductions)

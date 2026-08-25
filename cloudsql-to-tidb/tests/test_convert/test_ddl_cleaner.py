@@ -228,3 +228,52 @@ def test_table_scoped_rule_does_not_fire_on_a_view() -> None:
 def test_clean_statement_returns_raw_table_name() -> None:
     _new, _findings, _flags, table = clean_statement("CREATE TABLE `My Table` (id INT);")
     assert table == "`My Table`"
+
+
+# --- CSQL-DDL-4 collation pinning (live-migration regression) --------------
+
+
+def test_bare_charset_gets_an_explicit_collation() -> None:
+    # Regression from a real migration: `DEFAULT CHARSET=utf8mb3` with no
+    # COLLATE means utf8mb3_general_ci (case-insensitive) on MySQL, but a bare
+    # `CHARSET=utf8mb4` inherits TiDB's default utf8mb4_bin (case-SENSITIVE).
+    # That flips comparisons and flips what a UNIQUE key rejects.
+    new, _f, _fl, _t = clean_statement(
+        "CREATE TABLE t (c VARCHAR(60) NOT NULL, UNIQUE KEY c (c)) DEFAULT CHARSET=utf8mb3;"
+    )
+    assert "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci" in new
+
+
+def test_bare_column_charset_gets_an_explicit_collation() -> None:
+    new, _f, _fl, _t = clean_statement("CREATE TABLE t (c TEXT CHARACTER SET utf8mb3);")
+    assert "CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci" in new
+
+
+def test_explicit_collation_is_preserved_not_doubled() -> None:
+    new, _f, _fl, _t = clean_statement(
+        "CREATE TABLE t (c TEXT CHARACTER SET utf8mb3 COLLATE utf8mb3_bin);"
+    )
+    # The source said utf8mb3_bin, so that is what must carry through — the
+    # implied-default collation must NOT also be appended.
+    live = mask_sql(new)  # comments blanked, so only executable SQL remains
+    assert "utf8mb4_bin" in live
+    assert "utf8mb4_general_ci" not in live
+    assert live.upper().count("COLLATE") == 1
+
+
+def test_explicit_table_collation_is_preserved() -> None:
+    new, _f, _fl, _t = clean_statement(
+        "CREATE TABLE t (id INT) DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci;"
+    )
+    assert "utf8mb4_general_ci" in new
+    assert "utf8mb3" not in mask_sql(new)  # no live utf8mb3 left
+
+
+def test_collation_pinning_is_idempotent() -> None:
+    from tishift_cloudsql.core.convert.schema_transformer import transform_schema
+
+    sql = "CREATE TABLE t (c VARCHAR(60)) DEFAULT CHARSET=utf8mb3;"
+    first = transform_schema(sql, tier="dedicated")
+    second = transform_schema(first.sql, tier="dedicated")
+    assert second.sql == first.sql
+    assert [f for f in second.findings if f.action_taken == "rewritten"] == []

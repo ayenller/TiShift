@@ -22,7 +22,19 @@ FROM information_schema.COLUMNS
 WHERE TABLE_SCHEMA = 'myapp' ORDER BY TABLE_NAME, ORDINAL_POSITION;
 ```
 
-Run on both, diff the output. Expect and verify the deliberate differences:
+Run on both, diff the output.
+
+**Benign differences you will always see** — verified on a real 57-table
+migration, both are information_schema reporting quirks, not semantic drift:
+
+| Column | Cloud SQL 8.4 | TiDB 8.5 | Why |
+|---|---|---|---|
+| `EXTRA` on a column with `DEFAULT CURRENT_TIMESTAMP` | `DEFAULT_GENERATED` | empty | MySQL 8 tags expression defaults; TiDB does not. The default itself behaves identically |
+| `COLUMN_TYPE` of a `YEAR` column | `year` | `year(4)` | TiDB still reports the display width MySQL 8.0 dropped. Same type, same range |
+
+Filter both out before treating a diff as a finding.
+
+Expect and verify the deliberate differences:
 `utf8`→`utf8mb4` (CSQL-DDL-4), `MyISAM`→`InnoDB` (CSQL-DDL-2), missing spatial
 indexes (CSQL-DDL-6). Anything else is a defect.
 
@@ -40,6 +52,21 @@ Order-independent, so it works regardless of how rows were loaded. Notes:
 - Compare over the same PK ranges on both sides, not whole tables, so a mismatch
   points at a range you can investigate.
 - Floating-point columns will not match reliably; exclude them.
+
+## 3b. FULLTEXT indexes report as BTREE on TiDB
+
+Do not use `information_schema.STATISTICS.INDEX_TYPE` to confirm a FULLTEXT
+index survived. On TiDB v8.5.3 a real, working FULLTEXT index is reported there
+as `BTREE`, so a structure diff against the Cloud SQL source will show a
+spurious difference. `SHOW CREATE TABLE` is the source of truth:
+
+```sql
+SHOW CREATE TABLE `0_stock_category`\G
+-- FULLTEXT INDEX `..._fdx`(`description`) WITH PARSER STANDARD
+```
+
+(Verified: TiDB Cloud Starter does build real FULLTEXT indexes, which is what
+WARNING-2 assumes when it stays silent on that tier.)
 
 ## 4. TiFlash replicas
 

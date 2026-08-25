@@ -25,8 +25,13 @@ BINLOG_RESPONSES: list[tuple[str, object]] = [
 # The valid-indexes query also selects from information_schema.tables, so it
 # must be registered before the schema collector's table query or the substring
 # match would steal it.
+#
+# Keys are UPPERCASE because that is what information_schema actually returns,
+# whatever case the SELECT used. A lowercase fixture here previously matched the
+# collector's bug instead of reality, and the KeyError only showed up against a
+# live server.
 VALID_INDEX_RESPONSES: list[tuple[str, object]] = [
-    ("NOT IN (\n        SELECT", [{"table_schema": "myapp", "table_name": "no_pk"}]),
+    ("NOT IN (\n        SELECT", [{"TABLE_SCHEMA": "myapp", "TABLE_NAME": "no_pk"}]),
 ]
 
 ALL_RESPONSES = [

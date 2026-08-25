@@ -258,7 +258,7 @@ WARNING_RULES: list[CompatibilityRule] = [
             "if the application truly needs sequential IDs, TiDB's MySQL Compatibility Mode "
             "allocates them sequentially at a throughput cost"
         ),
-        check=lambda ctx: sum(1 for t in ctx.inventory.tables if t.auto_increment is not None),
+        check=lambda ctx: len(ctx.inventory.auto_increment_tables),
     ),
     CompatibilityRule(
         rule_id="WARNING-4",
@@ -392,10 +392,35 @@ WARNING_RULES: list[CompatibilityRule] = [
         check=lambda ctx: len(ctx.inventory.non_innodb_tables),
     ),
     CompatibilityRule(
+        rule_id="CSQL-WARNING-14",
+        severity="warning",
+        feature=(
+            "Foreign key referencing columns that are not the leading prefix of a "
+            "PRIMARY or UNIQUE key on the parent table"
+        ),
+        action=(
+            "Not a TiDB problem: TiDB accepts these and enforces them correctly "
+            "(verified on v8.5.3 — ERROR 1452 on a bad child row, ERROR 1451 on a "
+            "restricted parent delete). It is a portability problem. MySQL 8.0.16+ "
+            "dropped the old InnoDB extension and rejects them with ERROR 6125, so this "
+            "schema can no longer be rebuilt from its own dump on MySQL — which is "
+            "exactly what a rollback target, a staging refresh, or a new Cloud SQL "
+            "instance would need. Add a UNIQUE key covering the referenced columns on "
+            "the parent if you want that path to stay open"
+        ),
+        check=lambda ctx: len(ctx.inventory.fks_without_unique_parent_index),
+    ),
+    CompatibilityRule(
         rule_id="CSQL-WARNING-8",
         severity="warning",
         feature="Binary logging disabled — nothing for DM to replicate from",
-        action="gcloud sql instances patch <INSTANCE> --enable-bin-log (needs automatic backups on)",
+        action=(
+            "In the Console this is called Point-in-time recovery, not binary logging: "
+            "Edit -> Data Protection -> Enable point-in-time recovery. On the CLI, "
+            "`gcloud sql instances patch <INSTANCE> --enable-bin-log "
+            "--retained-transaction-log-days=N`. Needs automatic backups on, and it "
+            "restarts the instance"
+        ),
         check=_binlog_fail_gate("CSQL-WARNING-8"),
     ),
     CompatibilityRule(
@@ -418,12 +443,23 @@ WARNING_RULES: list[CompatibilityRule] = [
     CompatibilityRule(
         rule_id="CSQL-WARNING-11",
         severity="warning",
-        feature="Short binlog retention risks DM losing its position during the initial load",
-        action=(
-            "gcloud sql instances patch <INSTANCE> --retained-transaction-log-days=7 — "
-            "the instance setting, not the flag, is what stops Cloud SQL pruning the logs"
+        feature=(
+            "Binlog retention cannot be verified over the MySQL protocol — "
+            "confirm it out-of-band before starting DM"
         ),
-        check=_binlog_fail_gate("CSQL-WARNING-11"),
+        action=(
+            "The authoritative setting is the instance's transactionLogRetentionDays, "
+            "which `SHOW VARIABLES` does not expose — binlog_expire_logs_seconds is a "
+            "separate value that does not track it (observed staying at 86400 while the "
+            "instance was raised to 7 days). Run: `gcloud sql instances describe "
+            "<INSTANCE> --format='value(settings.backupConfiguration."
+            "transactionLogRetentionDays)'` and confirm it exceeds the expected initial "
+            "load time. Raise it with --retained-transaction-log-days=N (max 7 on "
+            "Enterprise, 35 on Enterprise Plus). Logs already pruned cannot come back"
+        ),
+        # Always fires when replication is planned: this is a "you must check
+        # this yourself" item, not a measurement. Scored at 0 — see rules/scoring.py.
+        check=lambda ctx: int(ctx.continue_replication_planned),
     ),
     CompatibilityRule(
         rule_id="CSQL-WARNING-12",

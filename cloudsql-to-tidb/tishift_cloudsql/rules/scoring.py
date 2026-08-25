@@ -59,6 +59,11 @@ POINTS = {
     "read_replicas_attached": 2,  # CSQL-WARNING-6, flat
     "non_innodb_table": 3,  # CSQL-WARNING-7, per table
     "non_innodb_table_max": 6,  # cap on the above
+    # CSQL-WARNING-14 costs nothing: TiDB accepts and enforces these FKs
+    # (verified on v8.5.3), so they do not affect readiness for *this* target.
+    # Still reported, because the dump stops being re-appliable to MySQL 8.0.16+,
+    # which is what a rollback or staging refresh would use.
+    "fk_without_unique_parent_index": 0,
     # Data & load feasibility
     "size_exceeds_tier_capacity": 5,  # flat
     "no_network_path": 5,  # flat
@@ -68,7 +73,11 @@ POINTS = {
     "continue_replication_required_but_starter": 5,  # flat
     "log_bin_off": 5,  # CSQL-WARNING-8, flat
     "binlog_format_or_row_image": 3,  # CSQL-WARNING-9/10, flat
-    "binlog_retention": 2,  # CSQL-WARNING-11, flat
+    # CSQL-WARNING-11 is a "verify this yourself" prompt, not a measurement:
+    # the authoritative retention lives in the instance settings, which the
+    # MySQL protocol does not expose. Deducting for an unmeasurable value
+    # would just penalise every replication-bound migration equally.
+    "binlog_retention": 0,  # CSQL-WARNING-11
     "binlog_row_value_options": 2,  # CSQL-WARNING-12, flat
     "binlog_transaction_compression": 2,  # CSQL-WARNING-13, flat
     "table_without_valid_index": 2,  # per table, only when continue replication is planned

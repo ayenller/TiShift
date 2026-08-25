@@ -38,6 +38,17 @@ REPORT_FORMATS = ("cli", "json", "md")
 DEFAULT_CONFIG = "tishift-cloudsql.yaml"
 
 
+def _normalize_formats(formats: tuple[str, ...]) -> tuple[str, ...]:
+    """Accept both `--format cli --format json` and `--format cli,json`.
+
+    Click's multiple=True only handles the first spelling, but the second is
+    what people actually type, and silently treating "cli,json,md" as one
+    unknown format is a miserable way to find that out.
+    """
+    expanded = [part.strip() for value in formats for part in value.split(",")]
+    return tuple("md" if f == "markdown" else f for f in expanded if f)
+
+
 @main.command()
 @click.option("--config", default=DEFAULT_CONFIG, help="Path to config file.")
 @click.option(
@@ -62,7 +73,8 @@ DEFAULT_CONFIG = "tishift-cloudsql.yaml"
     "formats",
     multiple=True,
     default=(),
-    help="Output format(s): cli, json, md (default: output.formats from config).",
+    help="Output format(s): cli, json, md. Repeatable, or comma-separated "
+    "(default: output.formats from config).",
 )
 @click.option(
     "--output-dir", default=None, help="Report output directory (default: output.dir from config)."
@@ -90,20 +102,31 @@ def scan(
 
     import pymysql
 
-    from tishift_cloudsql.connection import connect_source
+    from tishift_cloudsql.connection import connect_source, tls_is_unverified
     from tishift_cloudsql.core.scan.orchestrator import run_scan
     from tishift_cloudsql.core.scan.report import build_report, render_cli, write_reports
 
     cfg = _load_config_or_fail(config)
     schema = database or cfg.source.database
 
-    formats = formats or tuple(cfg.output.formats)
-    formats = tuple("md" if f == "markdown" else f for f in formats)
+    formats = _normalize_formats(formats or tuple(cfg.output.formats))
     unsupported = sorted(set(formats) - set(REPORT_FORMATS))
     if unsupported:
         click.echo(
             f"Note: unsupported format(s) skipped: {', '.join(unsupported)} "
             f"(supported: {', '.join(REPORT_FORMATS)})."
+        )
+
+    # Encrypted-but-unverified is a real downgrade and the user should know they
+    # are in it, but it is also the only thing that works until they fetch the
+    # per-instance CA — so warn and continue rather than refuse.
+    if tls_is_unverified(cfg.source) and cfg.source.connection_method != "auth_proxy":
+        click.echo(
+            "⚠️  source.ssl_ca is unset: the connection is encrypted but the server "
+            "certificate is NOT verified. Cloud SQL signs each instance with its own "
+            "self-signed CA, so system roots cannot validate it. Fetch the real CA with "
+            "`gcloud sql ssl server-ca-certs list --instance=<INSTANCE>` and set "
+            "source.ssl_ca."
         )
 
     try:
@@ -186,6 +209,7 @@ def convert(
     import difflib
     from pathlib import Path
 
+    from tishift_cloudsql.core.convert.ddl_cleaner import is_create_table_present
     from tishift_cloudsql.core.convert.report import build_report, write_reports
     from tishift_cloudsql.core.convert.schema_transformer import transform_schema
 
@@ -196,6 +220,15 @@ def convert(
         tier = _load_config_or_fail(config).target.tier
 
     original = Path(ddl_file).read_text()
+    # A dump that silently failed (wrong mysqldump flag, no privileges) leaves an
+    # empty or DDL-free file, and a clean "0 hits" report on it reads exactly
+    # like a schema that needed no conversion. Refuse instead.
+    if not is_create_table_present(original):
+        raise click.ClickException(
+            f"{ddl_file} contains no CREATE TABLE statements "
+            f"({Path(ddl_file).stat().st_size} bytes). "
+            "A failed mysqldump is the usual cause — check its stderr."
+        )
     result = transform_schema(original, tier=tier, tiflash_replicas=tiflash_replicas)
     report = build_report(result, ddl_file, tier, tiflash_replicas)
 

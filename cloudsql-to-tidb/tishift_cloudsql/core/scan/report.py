@@ -36,7 +36,6 @@ def build_report(result: ScanResult) -> dict:
     meta = result.metadata
 
     fk_tables = {c.table_name for c in inv.constraints if c.constraint_type == "FOREIGN KEY"}
-    auto_increment_tables = [t.table_name for t in inv.tables if t.auto_increment is not None]
 
     return {
         "schema": result.schema,
@@ -47,10 +46,11 @@ def build_report(result: ScanResult) -> dict:
             "total_size_bytes": result.total_size_bytes,
             "index_count": len(inv.indexes),
             "column_count": len(inv.columns),
-            "auto_increment_table_count": len(auto_increment_tables),
+            "auto_increment_table_count": len(inv.auto_increment_tables),
             "foreign_key_table_count": len(fk_tables),
             "non_innodb_table_count": len(inv.non_innodb_tables),
             "definer_object_count": len(inv.definer_objects),
+            "fk_without_unique_parent_index_count": len(inv.fks_without_unique_parent_index),
             "stored_procedure_count": sum(
                 1 for r in inv.routines if r.kind.upper() == "PROCEDURE"
             ),
@@ -85,6 +85,7 @@ def build_report(result: ScanResult) -> dict:
         },
         "tables_without_valid_index": list(result.tables_without_valid_index),
         "definer_objects": list(inv.definer_objects),
+        "fks_without_unique_parent_index": list(inv.fks_without_unique_parent_index),
         "non_innodb_tables": list(inv.non_innodb_tables),
         "assessment": {
             "blockers": [asdict(f) for f in result.assessment.blockers],

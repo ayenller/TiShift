@@ -64,6 +64,23 @@ reports must never render them as "clear".
 | CSQL-WARNING-5 | `mysql.heartbeat` present, or `cloudsql*` system users in scope | Cloud SQL's own bookkeeping objects will otherwise be dumped into TiDB and replicated by DM | Exclude the `mysql` schema from the dump and from DM's block-allow-list; never migrate the `cloudsql*` users |
 | CSQL-WARNING-6 | downstream read replicas attached | Replicas keep serving stale reads after cutover | Decide replica fate explicitly in the cutover plan; a replica left running is a split-brain read path |
 | CSQL-WARNING-7 | any table whose engine is not InnoDB | Cloud SQL permits MyISAM; TiDB has one engine | Convert to InnoDB before export — the convert phase rewrites the clause (CSQL-DDL-2), but MyISAM's non-transactional semantics may be load-bearing in the application |
+| CSQL-WARNING-14 | a foreign key whose referenced columns are not covered by a PRIMARY or UNIQUE key on the parent | **Not a TiDB problem** — TiDB accepts and enforces these. It is a *portability* problem: MySQL 8.0.16+ dropped the old InnoDB extension and rejects them with ERROR 6125 | Add a UNIQUE key covering the referenced columns on the parent if you need the dump to stay re-appliable to MySQL — a rollback target, a staging refresh, or a new Cloud SQL instance all need that. Scored at **0 penalty** |
+
+`CSQL-WARNING-14` is not strictly Cloud SQL–specific — it is a general MySQL
+8.0.16+ restriction — but it lives in this namespace rather than claiming a
+shared `BLOCKER-N`/`WARNING-N` id that other TiShift modules have not agreed on.
+
+The trap is that a *prefix* of a unique key is not unique. A parent with
+`PRIMARY KEY (branch_code, debtor_no)` does not make `branch_code` unique, so a
+child FK referencing `branch_code` alone is not backed by a unique constraint —
+even though the parent has a (non-unique) index on exactly that column.
+
+Verified on both ends against a real 250-table ERP schema:
+
+| Target | Result |
+|---|---|
+| Cloud SQL for MySQL 8.4.10 | **ERROR 6125**, apply stops at table 57 of 250 — for the original dump *and* the converted one |
+| TiDB v8.5.3 | All 250 tables created. FK enforced: ERROR 1452 on an orphan child row, ERROR 1451 on a restricted parent delete |
 
 ## Continue-replication (binlog) prechecks
 
@@ -73,10 +90,10 @@ planned.
 
 | ID | Variable / setting | Required | Cloud SQL remediation |
 |---|---|---|---|
-| CSQL-WARNING-8 | `log_bin` | `ON` | **Not a database flag.** `gcloud sql instances patch <INSTANCE> --enable-bin-log`, which requires automatic backups to already be enabled (`--backup-start-time=HH:MM`) |
+| CSQL-WARNING-8 | `log_bin` | `ON` | **Not a database flag, and the Console calls it Point-in-time recovery** (Edit → Data Protection → Enable point-in-time recovery). CLI: `--enable-bin-log` — Google's docs say explicitly *not* `--enable-point-in-time-recovery`, which is the PostgreSQL flag. Requires automatic backups already enabled, and **restarts the instance** |
 | CSQL-WARNING-9 | `binlog_format` | `ROW` | **Not user-configurable.** Cloud SQL sets `binlog_format=ROW` itself when binary logging is on. A non-ROW value means binary logging is off or the instance is not what it appears to be — investigate rather than patch |
 | CSQL-WARNING-10 | `binlog_row_image` | `FULL` | `gcloud sql instances patch <INSTANCE> --database-flags=binlog_row_image=full` (configurable, no restart) |
-| CSQL-WARNING-11 | binlog retention | ≥ 86400 s (1 day); 604800 s (7 days) recommended | Two settings interact: the `binlog_expire_logs_seconds` flag *and* the instance's `--retained-transaction-log-days` (valid range 1–35, ceiling depends on edition). Set the instance-level retention; the flag alone will not keep logs Cloud SQL has already pruned |
+| CSQL-WARNING-11 | continue replication is planned | **Retention cannot be read over the MySQL protocol.** `binlog_expire_logs_seconds` is NOT the authoritative value — the instance's `transactionLogRetentionDays` is, and it does not track the variable (observed: instance raised 1 → 7 while the variable stayed at 86400, and it was absent from `databaseFlags`) | Always reported when replicating, scored at **0**. Verify yourself: `gcloud sql instances describe <INSTANCE> --format='value(settings.backupConfiguration.transactionLogRetentionDays)'`. Max 7 on Enterprise, 35 on Enterprise Plus |
 | CSQL-WARNING-12 | `binlog_row_value_options` | empty, **not** `PARTIAL_JSON` | Clear the flag. There is no "unset one flag" verb — `--database-flags` *replaces* the whole list, so re-issue it without `binlog_row_value_options`, or use `--clear-database-flags` if it is the only flag set. Partial-JSON binlog rows cause **silent corruption** of JSON columns under DM, not a clean failure |
 | CSQL-WARNING-13 | `binlog_transaction_compression` | `OFF` | **Not an exposed Cloud SQL flag**, and off by default. If it somehow reads `ON`, open a support case rather than expecting a patch to work |
 

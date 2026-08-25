@@ -67,8 +67,10 @@ def run_scan(
     metadata = collect_platform_metadata(conn)
     inventory = collect_schema_inventory(conn, schema)
     binlog = evaluate_binlog_config(fetch_binlog_variables(conn))
+    # Scoped to the schema being migrated: an unscoped check pulls in tables
+    # from every other database on the instance and scores against them.
     tables_without_index = (
-        fetch_tables_without_valid_index(conn) if continue_replication_planned else []
+        fetch_tables_without_valid_index(conn, schema) if continue_replication_planned else []
     )
 
     total_size_bytes = sum(t.data_bytes + t.index_bytes for t in inventory.tables)

@@ -219,6 +219,17 @@ def _cloudsql_platform_surface(ctx: ScoringContext, counts: dict[str, int]) -> C
             f"(CSQL-WARNING-6)"
         )
 
+    bad_fks = counts["CSQL-WARNING-14"]
+    if bad_fks:
+        # Reported with no penalty, like WARNING-4: verified harmless on the
+        # actual target, but the reader still needs to know about it.
+        deductions.append(
+            f"-0: {bad_fks} foreign key(s) reference a non-unique parent index — TiDB "
+            f"accepts and enforces these, so no penalty; but MySQL 8.0.16+ rejects them "
+            f"(ERROR 6125), so the dump is no longer re-appliable to MySQL "
+            f"(CSQL-WARNING-14)"
+        )
+
     non_innodb = counts["CSQL-WARNING-7"]
     if non_innodb:
         points = min(non_innodb * POINTS["non_innodb_table"], POINTS["non_innodb_table_max"])
@@ -315,11 +326,10 @@ def _cutover_and_continue_replication(ctx: ScoringContext, counts: dict[str, int
         deductions.append(f"-{points}: {', '.join(reasons)}")
 
     if counts["CSQL-WARNING-11"] > 0:
-        points = POINTS["binlog_retention"]
-        score -= points
         deductions.append(
-            f"-{points}: binlog retention below the minimum or the recommendation "
-            f"(CSQL-WARNING-11)"
+            "-0: binlog retention must be confirmed with `gcloud sql instances describe` "
+            "— the MySQL protocol does not expose the instance setting that governs it "
+            "(CSQL-WARNING-11)"
         )
 
     if counts["CSQL-WARNING-12"] > 0:

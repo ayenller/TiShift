@@ -26,8 +26,11 @@ rather not walk the phases.
 - [ ] **`--database-flags` REPLACES the entire flag list.** Run
       `gcloud sql instances describe I --format='value(settings.databaseFlags)'`
       first and restate every flag you are keeping.
-- [ ] **Binary logging is not a flag** — `--enable-bin-log`, and it needs
-      automatic backups already on.
+- [ ] **Binary logging is not a flag, and the Console calls it Point-in-time
+      recovery.** Edit → Data Protection → Enable point-in-time recovery. CLI:
+      `--enable-bin-log` (NOT `--enable-point-in-time-recovery`, that is the PG
+      flag). Needs automatic backups on, and **it restarts the instance**.
+      Retention: 1–35 days Enterprise Plus, only 1–7 Enterprise.
 - [ ] **`binlog_format` is not configurable.** Cloud SQL forces `ROW`.
 - [ ] **`lower_case_table_names` is immutable** after instance creation.
 - [ ] **`gcloud sql export` runs as the instance's service account**, not yours.
@@ -64,6 +67,7 @@ rather not walk the phases.
 | CSQL-WARNING-5 | `mysql.heartbeat` and `cloudsql*` users in scope |
 | CSQL-WARNING-6 | Downstream read replicas |
 | CSQL-WARNING-7 | Non-InnoDB tables |
+| CSQL-WARNING-14 | FK referencing columns not covered by a PK/UNIQUE key on the parent. TiDB accepts and enforces these (no penalty); MySQL 8.0.16+ rejects them (ERROR 6125), so the dump stops being re-appliable to MySQL |
 
 ## 5. Continue-replication prechecks (Phase 7 only)
 
@@ -72,7 +76,7 @@ rather not walk the phases.
 | CSQL-WARNING-8 | `log_bin` | `ON` |
 | CSQL-WARNING-9 | `binlog_format` | `ROW` (not configurable) |
 | CSQL-WARNING-10 | `binlog_row_image` | `FULL` |
-| CSQL-WARNING-11 | retention | ≥ 86400s, 604800s recommended |
+| CSQL-WARNING-11 | retention | **Not readable via SQL.** Check `transactionLogRetentionDays` with gcloud |
 | CSQL-WARNING-12 | `binlog_row_value_options` | empty — `PARTIAL_JSON` corrupts JSON silently |
 | CSQL-WARNING-13 | `binlog_transaction_compression` | `OFF` |
 

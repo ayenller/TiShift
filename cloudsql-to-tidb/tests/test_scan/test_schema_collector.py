@@ -2,11 +2,38 @@ from __future__ import annotations
 
 from tishift_cloudsql.core.scan.collectors.schema import (
     collect_schema_inventory,
+    find_fks_without_unique_parent_index,
     is_foreign_definer,
 )
 from tests.test_scan.fake_connection import ScriptedConnection
 
 BASE_RESPONSES: list[tuple[str, object]] = [
+    # Registered first: both of these also contain "information_schema.STATISTICS"
+    # or KEY_COLUMN_USAGE text that a later, broader entry would otherwise steal.
+    (
+        "REFERENCED_TABLE_NAME IS NOT NULL",
+        [
+            {
+                "CONSTRAINT_NAME": "fk_c",
+                "TABLE_NAME": "orders",
+                "REFERENCED_TABLE_NAME": "customers",
+                "REFERENCED_COLUMN_NAME": "id",
+                "ORDINAL_POSITION": 1,
+            }
+        ],
+    ),
+    (
+        "NON_UNIQUE = 0",
+        [
+            {
+                "TABLE_NAME": "customers",
+                "INDEX_NAME": "PRIMARY",
+                "NON_UNIQUE": 0,
+                "COLUMN_NAME": "id",
+                "SEQ_IN_INDEX": 1,
+            }
+        ],
+    ),
     (
         "information_schema.TABLES t",
         [
@@ -240,3 +267,164 @@ class TestIsForeignDefiner:
 
     def test_empty_definer(self) -> None:
         assert not is_foreign_definer("")
+
+
+def test_auto_increment_tables_come_from_column_extra_not_table_counter() -> None:
+    # Regression, found against a live 250-table Cloud SQL schema:
+    # information_schema.TABLES.AUTO_INCREMENT is the NEXT counter value. It is
+    # NULL for any table never written to, and it is served from a cache
+    # governed by information_schema_stats_expiry — two runs minutes apart gave
+    # 129 and 138 where 219 tables actually had an auto-increment column.
+    inv = _inventory()
+    # access_log has AUTO_INCREMENT=NULL in TABLES but no autoinc column either;
+    # orders has EXTRA='auto_increment' on `id` and a counter value.
+    assert inv.auto_increment_tables == ["orders"]
+
+
+def test_auto_increment_detected_when_table_counter_is_null() -> None:
+    # The 81-table case from the live run: structurally auto-increment, but the
+    # cached counter reads NULL because nothing was ever inserted.
+    inv = _inventory(
+        [
+            (
+                "information_schema.TABLES t",
+                [
+                    {
+                        "TABLE_NAME": "never_written",
+                        "ENGINE": "InnoDB",
+                        "TABLE_ROWS": 0,
+                        "DATA_LENGTH": 0,
+                        "INDEX_LENGTH": 0,
+                        "TABLE_COLLATION": "utf8mb4_general_ci",
+                        "CREATE_OPTIONS": "",
+                        "AUTO_INCREMENT": None,
+                        "CHARACTER_SET_NAME": "utf8mb4",
+                    }
+                ],
+            ),
+            (
+                "information_schema.COLUMNS",
+                [
+                    {
+                        "TABLE_NAME": "never_written",
+                        "COLUMN_NAME": "id",
+                        "ORDINAL_POSITION": 1,
+                        "DATA_TYPE": "BIGINT",
+                        "COLUMN_TYPE": "bigint",
+                        "IS_NULLABLE": "NO",
+                        "COLUMN_DEFAULT": None,
+                        "CHARACTER_MAXIMUM_LENGTH": None,
+                        "NUMERIC_PRECISION": 20,
+                        "NUMERIC_SCALE": 0,
+                        "CHARACTER_SET_NAME": None,
+                        "COLLATION_NAME": None,
+                        "EXTRA": "auto_increment",
+                    }
+                ],
+            ),
+        ]
+    )
+    assert inv.tables[0].auto_increment is None
+    assert inv.auto_increment_tables == ["never_written"]
+
+
+class TestFksWithoutUniqueParentIndex:
+    """Regression from a live 250-table ERP: 3 FKs referenced a parent column
+    covered only by a non-unique index. MySQL 8.0.16+ refuses to create these
+    (ERROR 6125), so the schema could not be rebuilt from its own dump — the
+    apply died at table 57 of 250, on the original file as well as the
+    converted one."""
+
+    @staticmethod
+    def _fk(constraint, child, parent, cols):
+        return [
+            {
+                "constraint_name": constraint,
+                "table_name": child,
+                "referenced_table_name": parent,
+                "referenced_column_name": c,
+                "ordinal_position": i,
+            }
+            for i, c in enumerate(cols, start=1)
+        ]
+
+    @staticmethod
+    def _idx(table, index, cols, non_unique=0):
+        return [
+            {
+                "table_name": table,
+                "index_name": index,
+                "non_unique": non_unique,
+                "column_name": c,
+                "seq_in_index": i,
+            }
+            for i, c in enumerate(cols, start=1)
+        ]
+
+    def test_composite_pk_does_not_satisfy_a_single_column_fk(self) -> None:
+        # The exact live case: PRIMARY KEY (branch_code, debtor_no), FK on
+        # branch_code alone. branch_code is not unique by itself.
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("0_debtor_trans_ibfk_2", "0_debtor_trans", "0_cust_branch", ["branch_code"]),
+            self._idx("0_cust_branch", "PRIMARY", ["branch_code", "debtor_no"])
+            + self._idx("0_cust_branch", "branch_code", ["branch_code"], non_unique=1),
+        )
+        assert offenders == ["0_debtor_trans.0_debtor_trans_ibfk_2 -> 0_cust_branch(branch_code)"]
+
+    def test_single_column_pk_satisfies_the_fk(self) -> None:
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("fk1", "child", "parent", ["id"]),
+            self._idx("parent", "PRIMARY", ["id"]),
+        )
+        assert offenders == []
+
+    def test_composite_fk_matching_the_full_unique_key_is_satisfied(self) -> None:
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("fk1", "child", "parent", ["a", "b"]),
+            self._idx("parent", "PRIMARY", ["a", "b"]),
+        )
+        assert offenders == []
+
+    def test_fk_shorter_than_the_unique_key_is_not_satisfied(self) -> None:
+        # (a, b) is not unique when the key is (a, b, c) — a prefix of a unique
+        # key is not itself unique. Getting this backwards makes the whole rule
+        # silently pass everything.
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("fk1", "child", "parent", ["a", "b"]),
+            self._idx("parent", "PRIMARY", ["a", "b", "c"]),
+        )
+        assert offenders == ["child.fk1 -> parent(a, b)"]
+
+    def test_fk_longer_than_the_unique_key_is_satisfied(self) -> None:
+        # Referencing (a, b) where (a) alone is unique is fine — redundant, but
+        # every referenced row is still uniquely identified.
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("fk1", "child", "parent", ["a", "b"]),
+            self._idx("parent", "PRIMARY", ["a"]),
+        )
+        assert offenders == []
+
+    def test_fk_column_order_must_match_the_index(self) -> None:
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("fk1", "child", "parent", ["b", "a"]),
+            self._idx("parent", "PRIMARY", ["a", "b"]),
+        )
+        assert offenders == ["child.fk1 -> parent(b, a)"]
+
+    def test_non_unique_index_never_satisfies(self) -> None:
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("fk1", "child", "parent", ["id"]),
+            self._idx("parent", "idx", ["id"], non_unique=1),
+        )
+        assert offenders == ["child.fk1 -> parent(id)"]
+
+    def test_a_secondary_unique_key_also_satisfies(self) -> None:
+        offenders = find_fks_without_unique_parent_index(
+            self._fk("fk1", "child", "parent", ["code"]),
+            self._idx("parent", "PRIMARY", ["id"])
+            + self._idx("parent", "uk_code", ["code"]),
+        )
+        assert offenders == []
+
+    def test_no_foreign_keys_at_all(self) -> None:
+        assert find_fks_without_unique_parent_index([], []) == []

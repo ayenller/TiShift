@@ -88,6 +88,15 @@ SET FOREIGN_KEY_CHECKS=1;
 Per-table DDL is not FK-topologically ordered, so an unwrapped apply dies with
 `ERROR 1824` on the first forward reference.
 
+On TiDB this is the only wrapper you need. Verified against v8.5.3: a real
+250-table ERP schema applied cleanly, 2711 columns and 185 foreign keys intact.
+
+If you ever apply the same output to **MySQL** 8.0.16+ instead — a rollback
+target, a staging refresh — expect `ERROR 6125` ("Missing unique key for
+constraint … in the referenced table"), which `FOREIGN_KEY_CHECKS=0` does not
+suppress. TiDB accepts those foreign keys; MySQL no longer does. Scan reports
+them as CSQL-WARNING-14.
+
 ## Parse validation
 
 Rewritten statements are re-parsed with sqlglot. A failure is only reported when

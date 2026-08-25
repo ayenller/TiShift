@@ -51,25 +51,7 @@ def test_binlog_row_image_remediation_uses_database_flags() -> None:
     assert "REPLACES" in check.remediation
 
 
-def test_retention_below_minimum_fails() -> None:
-    result = evaluate_binlog_config({**PASSING, "binlog_expire_logs_seconds": "3600"})
-    assert not result.continue_replication_ready
-    assert _check(result, "binlog_expire_logs_seconds").status == "fail"
 
-
-def test_retention_between_minimum_and_recommended_warns() -> None:
-    # Meets the hard minimum but leaves no margin — a warn, not a fail.
-    result = evaluate_binlog_config({**PASSING, "binlog_expire_logs_seconds": "86400"})
-    assert result.continue_replication_ready
-    assert _check(result, "binlog_expire_logs_seconds").status == "warn"
-
-
-def test_retention_remediation_points_at_instance_setting() -> None:
-    check = _check(
-        evaluate_binlog_config({**PASSING, "binlog_expire_logs_seconds": "60"}),
-        "binlog_expire_logs_seconds",
-    )
-    assert "--retained-transaction-log-days" in check.remediation
 
 
 def test_partial_json_fails() -> None:
@@ -120,3 +102,20 @@ def test_passing_checks_carry_no_remediation_noise() -> None:
 def test_case_and_whitespace_are_tolerated() -> None:
     result = evaluate_binlog_config({**PASSING, "log_bin": " on ", "binlog_format": "row"})
     assert result.continue_replication_ready
+
+def test_retention_is_informational_not_gated() -> None:
+    # Verified on a live instance: transactionLogRetentionDays was raised 1 -> 7
+    # while binlog_expire_logs_seconds stayed at 86400 and was not even present
+    # in the instance's databaseFlags. Gating on this variable would WARN
+    # forever on a correctly configured instance.
+    result = evaluate_binlog_config({**PASSING, "binlog_expire_logs_seconds": "60"})
+    assert result.continue_replication_ready
+    check = _check(result, "binlog_expire_logs_seconds")
+    assert check.status == "info"
+    assert check.rule_id is None
+    assert "transactionLogRetentionDays" in check.why
+
+
+def test_retention_check_points_at_gcloud_for_the_real_value() -> None:
+    check = _check(evaluate_binlog_config(PASSING), "binlog_expire_logs_seconds")
+    assert "gcloud sql instances describe" in check.why

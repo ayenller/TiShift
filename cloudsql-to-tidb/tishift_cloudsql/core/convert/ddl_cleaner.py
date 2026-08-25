@@ -160,6 +160,15 @@ def is_create_table(stmt: str) -> bool:
     return bool(_CREATE_TABLE_RE.search(mask_sql(stmt)))
 
 
+def is_create_table_present(sql: str) -> bool:
+    """True when a script contains at least one real CREATE TABLE.
+
+    Masked, so a `CREATE TABLE` mentioned only inside a comment or a string
+    literal does not count as a schema.
+    """
+    return bool(_CREATE_TABLE_RE.search(mask_sql(sql)))
+
+
 def _is_table_statement(masked: str) -> bool:
     return bool(_CREATE_TABLE_RE.search(masked) or _ALTER_TABLE_RE.search(masked))
 

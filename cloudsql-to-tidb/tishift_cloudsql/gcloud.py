@@ -76,16 +76,26 @@ def clear_flag_command(config: GcpConfig, flag: str) -> str:
 def enable_binlog_command(config: GcpConfig, retention_days: int = 7) -> str:
     """Render the command that turns on binary logging and sets its retention.
 
-    Binary logging on Cloud SQL for MySQL is `--enable-bin-log`, not a database
-    flag, and it requires automatic backups to already be on ("Must have
-    automatic backups enabled to use"). `--retained-transaction-log-days`
-    accepts 1-35, but the ceiling depends on the instance's edition, so a value
-    that is accepted on Enterprise Plus may be rejected on Enterprise.
+    Naming trap worth knowing before you go looking in the Console: there is no
+    "binary logging" switch there. The feature is called **Point-in-time
+    recovery**, and turning it on is what starts writing binlogs. On the command
+    line the flag is `--enable-bin-log` — Google's own docs say to use that and
+    *not* `--enable-point-in-time-recovery`, which is the PostgreSQL spelling.
+
+    Two further constraints: automatic backups must already be on, and enabling
+    this **restarts the instance**. Retention is 1-35 days on Enterprise Plus but
+    only 1-7 on Enterprise, so a value accepted on one edition is rejected on the
+    other.
     """
     return (
         f"gcloud sql instances patch {_instance(config)}{_project_flag(config)} "
         f"--enable-bin-log --retained-transaction-log-days={retention_days}\n"
-        "# If automatic backups are off, enable them in the same or a prior patch:\n"
+        "# Console equivalent: Edit -> Data Protection -> Enable point-in-time recovery.\n"
+        "# NOTE: this restarts the instance.\n"
+        "# Check automatic backups are on first:\n"
+        f"#   gcloud sql instances describe {_instance(config)}{_project_flag(config)} "
+        "--format='value(settings.backupConfiguration.enabled)'\n"
+        "# If they are off:\n"
         f"#   gcloud sql instances patch {_instance(config)}{_project_flag(config)} "
         "--backup-start-time=03:00"
     )

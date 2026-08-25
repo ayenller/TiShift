@@ -144,6 +144,11 @@ class TableInfo:
     create_options: str = ""  # raw CREATE_OPTIONS, e.g. row_format=COMPRESSED
     charset: str | None = None
     collation: str | None = None
+    # The *next* AUTO_INCREMENT value, from a cached dynamic statistic. It is
+    # NULL for a table that has never been written, and its freshness depends on
+    # information_schema_stats_expiry — so it is useful as a magnitude, and
+    # useless as "does this table have an auto-increment column". Use
+    # SchemaInventory.auto_increment_tables for that.
     auto_increment: int | None = None
     partition_method: str | None = None
     columns: list[ColumnInfo] = field(default_factory=list)
@@ -220,9 +225,17 @@ class SchemaInventory:
     # Derived roll-ups, computed once by the collector so every rule that needs
     # them reads the same list instead of re-deriving it slightly differently.
     non_innodb_tables: list[str] = field(default_factory=list)
+    # Derived from COLUMNS.EXTRA, which is structural and always accurate —
+    # not from TABLES.AUTO_INCREMENT, which is a cached counter value.
+    auto_increment_tables: list[str] = field(default_factory=list)
     unsupported_collations: list[str] = field(default_factory=list)
     # Objects whose DEFINER names a principal that cannot exist on TiDB.
     definer_objects: list[str] = field(default_factory=list)
+    # Foreign keys whose referenced columns are NOT the leading prefix of a
+    # PRIMARY or UNIQUE key on the parent. Old InnoDB allowed this; MySQL
+    # 8.0.16+ rejects it with ERROR 6125, so such a schema cannot be re-created
+    # from its own dump. See CSQL-WARNING-14.
+    fks_without_unique_parent_index: list[str] = field(default_factory=list)
 
 
 @dataclass

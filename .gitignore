@@ -63,3 +63,5 @@ node_modules/
 aurora-to-tidb/tishift-daemon-prompt.md
 aurora-to-tidb/aurora-to-tidb-migration-plan.md
 aurora-to-tidb/estimate_tokens.py
+cloudsql-to-tidb/docs/design.zh-CN.md
+cloudsql-to-tidb/docs/runbook-tenant-poc.md

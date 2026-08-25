@@ -38,12 +38,62 @@ variables and prints per-variable remediation.
 
 | Variable | Required | How to fix it on Cloud SQL |
 |---|---|---|
-| `log_bin` | `ON` | `gcloud sql instances patch I --enable-bin-log`. Needs automatic backups on first (`--backup-start-time=HH:MM`) |
+| `log_bin` | `ON` | Enable **Point-in-time recovery** — see below. `gcloud sql instances patch I --enable-bin-log` |
 | `binlog_format` | `ROW` | **Not configurable.** Cloud SQL sets ROW itself. A different value means binary logging is off — investigate, don't patch |
 | `binlog_row_image` | `FULL` | `gcloud sql instances patch I --database-flags=binlog_row_image=full` |
-| retention | ≥ 1 day, 7 recommended | `gcloud sql instances patch I --retained-transaction-log-days=7` (range 1–35, ceiling depends on edition) |
+| retention | ≥ 1 day, 7 recommended | **Not visible via `SHOW VARIABLES`** — `binlog_expire_logs_seconds` does not track it. Read the real value with `gcloud sql instances describe I --format='value(settings.backupConfiguration.transactionLogRetentionDays)'`; set it with `--retained-transaction-log-days=N`. **1–35 on Enterprise Plus, only 1–7 on Enterprise** |
 | `binlog_row_value_options` | empty | Re-issue `--database-flags` without it, or `--clear-database-flags` |
 | `binlog_transaction_compression` | `OFF` | **Not an exposed flag**; off by default. Support case if it reads ON |
+
+### Enabling binary logging = enabling PITR
+
+This is the single most common place to lose time, because **the Console has no
+"binary logging" switch**. The feature is called *Point-in-time recovery*, and
+turning it on is what starts writing binlogs.
+
+**Console:** Cloud SQL → your instance → **Edit** → expand **Data Protection** →
+check **Enable point-in-time recovery** → set the retention days → **Save**.
+
+**gcloud:**
+
+```bash
+# Check automatic backups are on first — PITR requires them.
+gcloud sql instances describe INSTANCE \
+  --format='value(settings.backupConfiguration.enabled)'
+
+# If they are off:
+gcloud sql instances patch INSTANCE --backup-start-time=03:00
+
+# Then enable PITR (this is the binlog switch):
+gcloud sql instances patch INSTANCE --enable-bin-log --retained-transaction-log-days=7
+```
+
+**`binlog_expire_logs_seconds` is not the retention setting.** Two observations
+from one real instance settle this:
+
+- With PITR off it read `2592000` (30 days); switching PITR on dropped it to
+  `86400`. A pre-PITR reading is meaningless.
+- Raising the instance to `--retained-transaction-log-days=7` left the variable
+  at `86400`, and the flag was never added to `databaseFlags`.
+
+The two are independent: Cloud SQL prunes transaction logs for PITR according to
+the **instance** setting, which the MySQL protocol does not expose at all. Read
+the real value with:
+
+```bash
+gcloud sql instances describe INSTANCE \
+  --format='value(settings.backupConfiguration.transactionLogRetentionDays)'
+```
+
+Three things to plan around:
+
+- Use `--enable-bin-log`. Google's docs say explicitly **not**
+  `--enable-point-in-time-recovery` — that one is the PostgreSQL spelling.
+- **Enabling PITR restarts the instance.** Schedule a window.
+- Retention is **1–35 days on Enterprise Plus but only 1–7 on Enterprise**. On
+  Enterprise the 7-day recommendation *is* the ceiling, so if the initial load
+  might outrun it, shorten the load rather than plan to extend retention.
+- Enterprise Plus instances have PITR on by default.
 
 Two things that catch everyone:
 

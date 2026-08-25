@@ -55,13 +55,18 @@ def evaluate_binlog_config(variables: dict[str, str | None]) -> BinlogPrecheckRe
             why=INFORMATIONAL_VARIABLES["server_id"],
         )
     )
-    for variable in ("gtid_mode", "enforce_gtid_consistency"):
+    for variable in ("binlog_expire_logs_seconds", "gtid_mode", "enforce_gtid_consistency"):
+        required = (
+            "(verify out-of-band — see why)"
+            if variable == "binlog_expire_logs_seconds"
+            else "(informational only — Cloud SQL enforces GTID)"
+        )
         result.checks.append(
             BinlogVariableCheck(
                 variable=variable,
                 rule_id=None,
                 actual=variables.get(variable),
-                required="(informational only — Cloud SQL enforces GTID)",
+                required=required,
                 status="info",
                 why=INFORMATIONAL_VARIABLES[variable],
             )

@@ -76,10 +76,15 @@ REQUIRED_RULES: list[BinlogRule] = [
         why="Enables binary logging, which DM replays to replicate changes into TiDB",
         check=_equals("ON"),
         remediation=(
-            "Not a database flag. Enable it on the instance: "
-            "`gcloud sql instances patch <INSTANCE> --enable-bin-log`. "
-            "Requires automatic backups to already be on — if they are not, "
-            "set `--backup-start-time=HH:MM` first."
+            "Not a database flag, and the Console does not call it 'binary logging' — "
+            "it is Point-in-time recovery. Console: Edit -> Data Protection -> "
+            "check 'Enable point-in-time recovery' -> set retention days -> Save. "
+            "gcloud: `gcloud sql instances patch <INSTANCE> --enable-bin-log "
+            "--retained-transaction-log-days=N` (use --enable-bin-log, NOT "
+            "--enable-point-in-time-recovery, which is the PostgreSQL flag). "
+            "Requires automatic backups on; verify with "
+            "`gcloud sql instances describe <INSTANCE>` -> backupConfiguration.enabled. "
+            "Enabling it RESTARTS the instance — schedule a window."
         ),
     ),
     BinlogRule(
@@ -104,21 +109,6 @@ REQUIRED_RULES: list[BinlogRule] = [
             "`gcloud sql instances patch <INSTANCE> --database-flags=binlog_row_image=full` "
             "(configurable, no restart). Remember --database-flags REPLACES the whole flag "
             "list — restate the instance's existing flags in the same command."
-        ),
-    ),
-    BinlogRule(
-        variable="binlog_expire_logs_seconds",
-        rule_id="CSQL-WARNING-11",
-        required=">= 86400 (1 day)",
-        recommended=">= 604800 (7 days)",
-        why="DM needs consecutive binlogs to still exist when the initial load finishes",
-        check=_int_at_least(86400),
-        recommended_check=_int_at_least(604800),
-        remediation=(
-            "Two settings interact. Set the instance-level retention — "
-            "`gcloud sql instances patch <INSTANCE> --retained-transaction-log-days=7` "
-            "(valid range 1-35; the ceiling depends on the instance's edition) — because "
-            "raising the flag alone will not bring back logs Cloud SQL has already pruned."
         ),
     ),
     BinlogRule(
@@ -153,9 +143,25 @@ REQUIRED_RULES: list[BinlogRule] = [
 # Collected by the same query for visibility, but not gated: these are context
 # a reader needs, not requirements DM imposes.
 INFORMATIONAL_VARIABLES: dict[str, str] = {
+    "binlog_expire_logs_seconds": (
+        "NOT the authoritative retention on Cloud SQL, and not gated here. Cloud SQL "
+        "retains transaction logs for PITR according to the instance-level "
+        "transactionLogRetentionDays, which is a separate setting the MySQL protocol "
+        "does not expose. Observed on a real instance: transactionLogRetentionDays was "
+        "raised 1 -> 7 while this variable stayed at 86400, and it was not even present "
+        "in the instance's databaseFlags. Gating on this value would WARN forever on a "
+        "correctly configured instance. Check the real one with: "
+        "`gcloud sql instances describe <INSTANCE> "
+        "--format='value(settings.backupConfiguration.transactionLogRetentionDays)'`"
+    ),
     "server_id": (
         "Must be non-zero and unique per source; 0 disables binary logging entirely, "
-        "which breaks replication silently rather than failing cleanly"
+        "which breaks replication silently rather than failing cleanly. Cloud SQL "
+        "regenerates this value across a full instance stop/start — observed changing "
+        "from 1838753873 to 3608002274 — but NOT across a config-change restart, where "
+        "it survived intact. Either way, do not build anything that assumes it is "
+        "stable. GTID keys on server_uuid, which was observed unchanged across a "
+        "PITR-enable restart, so GTID-based resume is unaffected"
     ),
     "gtid_mode": (
         "Cloud SQL enforces GTID and it cannot be turned off. This is good for DM — "

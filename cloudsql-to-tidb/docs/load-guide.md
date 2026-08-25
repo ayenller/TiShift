@@ -42,9 +42,45 @@ gcloud sql export csv INSTANCE gs://BUCKET/orders.csv \
 `--offload` runs the export on a temporary instance instead of straining the
 primary. Use it on anything production-facing.
 
+Then grant TiDB Cloud's service account read access — a *different* account from
+the one that wrote the export.
+
+**A predefined role is not enough.** `roles/storage.objectViewer` grants
+`storage.objects.get` and `storage.objects.list` but **not** `storage.buckets.get`,
+which is a bucket-level permission, and the import fails with:
+
+```
+Access denied to the source 'gs://BUCKET/': The role doesn't have
+storage.buckets.get permission to the source.
+```
+
+TiDB Cloud Dedicated requires all three, which means a custom role:
+
+```bash
+gcloud iam roles create tidbCloudStorageReader --project=PROJECT \
+  --title="TiDB Cloud Storage Reader" \
+  --permissions=storage.buckets.get,storage.objects.get,storage.objects.list \
+  --stage=GA
+
+gcloud storage buckets add-iam-policy-binding gs://BUCKET \
+  --member="serviceAccount:<TIDB_CLOUD_SA>" \
+  --role="projects/PROJECT/roles/tidbCloudStorageReader"
+```
+
+Find `<TIDB_CLOUD_SA>` on the TiDB Cloud import screen; it looks like
+`np-sa-dedicated-prod--XXXXXXXX@tidbcloud-prod-000.iam.gserviceaccount.com`.
+
 Then import in the TiDB Cloud console: **Import → From cloud storage → Google
-Cloud Storage**, pointed at the bucket prefix. TiDB Cloud's own service account
-needs read access to the bucket.
+Cloud Storage**, pointed at the bucket prefix.
+
+Two accounts, two directions, easy to conflate:
+
+| Account | Role | Why |
+|---|---|---|
+| Cloud SQL instance SA | `roles/storage.objectAdmin` (predefined) | writes the export |
+| TiDB Cloud SA | custom: `storage.buckets.get` + `objects.get` + `objects.list` | reads it back |
+
+See [TiDB Cloud external storage docs](https://docs.pingcap.com/tidbcloud/dedicated-external-storage/#configure-gcs-access).
 
 ## Chain B — Dumpling over the Auth Proxy (fallback)
 

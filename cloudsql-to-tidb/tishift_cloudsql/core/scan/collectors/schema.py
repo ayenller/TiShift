@@ -215,6 +215,81 @@ def _collect_constraints(cur: Any, schema: str) -> list[ConstraintInfo]:
     ]
 
 
+def find_fks_without_unique_parent_index(
+    fk_rows: list[dict[str, Any]], index_rows: list[dict[str, Any]]
+) -> list[str]:
+    """Return FKs whose referenced columns are not a unique-key prefix on the parent.
+
+    Pure function over two raw result sets so it can be tested without a server.
+
+    The direction that matters: the *whole* unique key must be covered by the
+    referenced columns, not the other way round. A prefix of a unique key is not
+    itself unique — ``PRIMARY KEY (branch_code, debtor_no)`` leaves
+    ``branch_code`` alone perfectly duplicable, which is exactly the live case
+    that produced ERROR 6125. So an index qualifies when its full ordered column
+    list equals the leading slice of the FK's referenced columns.
+    """
+    # constraint -> ordered referenced columns, plus the parent table
+    fks: dict[str, dict[str, Any]] = {}
+    for row in fk_rows:
+        key = (row["constraint_name"], row["table_name"])
+        entry = fks.setdefault(
+            key,
+            {"parent": row["referenced_table_name"], "cols": [], "child": row["table_name"]},
+        )
+        entry["cols"].append((row["ordinal_position"], row["referenced_column_name"]))
+
+    # parent table -> list of unique indexes, each an ordered column list
+    unique_indexes: dict[str, dict[str, list[tuple[int, str]]]] = {}
+    for row in index_rows:
+        if row["non_unique"]:
+            continue
+        table = unique_indexes.setdefault(row["table_name"], {})
+        table.setdefault(row["index_name"], []).append((row["seq_in_index"], row["column_name"]))
+
+    offenders: list[str] = []
+    for (constraint, _child_table), entry in fks.items():
+        referenced = [c for _pos, c in sorted(entry["cols"])]
+        candidates = unique_indexes.get(entry["parent"], {})
+        satisfied = False
+        for cols in candidates.values():
+            index_cols = [c for _seq, c in sorted(cols)]
+            if len(index_cols) <= len(referenced) and referenced[: len(index_cols)] == index_cols:
+                satisfied = True
+                break
+        if not satisfied:
+            offenders.append(
+                f"{entry['child']}.{constraint} -> "
+                f"{entry['parent']}({', '.join(referenced)})"
+            )
+    return sorted(offenders)
+
+
+def _collect_fk_parent_index_data(
+    cur: Any, schema: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    fk_rows = _query(
+        cur,
+        """
+        SELECT CONSTRAINT_NAME, TABLE_NAME, REFERENCED_TABLE_NAME,
+               REFERENCED_COLUMN_NAME, ORDINAL_POSITION
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = %s AND REFERENCED_TABLE_NAME IS NOT NULL
+        """,
+        (schema,),
+    )
+    index_rows = _query(
+        cur,
+        """
+        SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, COLUMN_NAME, SEQ_IN_INDEX
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = %s AND NON_UNIQUE = 0
+        """,
+        (schema,),
+    )
+    return fk_rows, index_rows
+
+
 def _collect_routines(cur: Any, schema: str) -> list[RoutineInfo]:
     rows = _query(
         cur,
@@ -330,6 +405,11 @@ def collect_schema_inventory(conn: pymysql.Connection, schema: str) -> SchemaInv
         inv.triggers = _collect_triggers(cur, schema)
         inv.events = _collect_events(cur, schema)
         inv.views = _collect_views(cur, schema)
+        fk_rows, unique_index_rows = _collect_fk_parent_index_data(cur, schema)
+
+    inv.fks_without_unique_parent_index = find_fks_without_unique_parent_index(
+        fk_rows, unique_index_rows
+    )
 
     for column in columns:
         table = tables.get(column.table_name)
@@ -346,6 +426,15 @@ def collect_schema_inventory(conn: pymysql.Connection, schema: str) -> SchemaInv
     inv.non_innodb_tables = [
         t.table_name for t in inv.tables if t.engine and t.engine.lower() != "innodb"
     ]
+    # Structural, from COLUMNS.EXTRA. Deliberately NOT derived from
+    # TABLES.AUTO_INCREMENT: that column holds the next counter value, which is
+    # NULL for any table never written to and is served from a cache governed by
+    # information_schema_stats_expiry. On a real 250-table schema it reported
+    # 138 tables where 219 actually have an auto-increment column, and returned
+    # a different number on two runs minutes apart.
+    inv.auto_increment_tables = sorted(
+        {c.table_name for c in columns if "auto_increment" in (c.extra or "").lower()}
+    )
 
     # Roll the DEFINER check up once, here, so every rule that needs it reads
     # the same list instead of re-deriving it slightly differently.

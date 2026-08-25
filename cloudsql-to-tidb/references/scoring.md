@@ -40,6 +40,7 @@ the score, and vice versa.
 | | Cloud SQL system artifacts in scope (CSQL-WARNING-5) | 2 flat |
 | | downstream read replicas (CSQL-WARNING-6) | 2 flat |
 | | non-InnoDB tables (CSQL-WARNING-7) | 3 per table, max 6 |
+| | FK referencing a non-unique parent index (CSQL-WARNING-14) | **0** — TiDB accepts and enforces these; reported for MySQL portability only |
 | Data & load feasibility | source larger than the tier's capacity | 5 flat |
 | | no confirmed network path | 5 flat |
 | | no GCS export bucket configured | 2 flat |
@@ -47,7 +48,7 @@ the score, and vice versa.
 | | continue replication wanted but tier is Starter | 5 flat |
 | | binary logging off (CSQL-WARNING-8) | 5 flat |
 | | `binlog_format` / `binlog_row_image` wrong (CSQL-WARNING-9/10) | 3 flat |
-| | binlog retention too short (CSQL-WARNING-11) | 2 flat |
+| | binlog retention unverifiable (CSQL-WARNING-11) | **0** — the authoritative setting is not exposed over the MySQL protocol |
 | | `binlog_row_value_options` set (CSQL-WARNING-12) | 2 flat |
 | | `binlog_transaction_compression` on (CSQL-WARNING-13) | 2 flat |
 | | table without a valid index | 2 per table |

@@ -201,3 +201,27 @@ def test_convert_is_idempotent_end_to_end(sample_config_path: Path, tmp_path: Pa
     assert report["tiflash_statements"] == []
     rewrites = [f for f in report["findings"] if f["action_taken"] in ("rewritten", "commented_out")]
     assert rewrites == []
+
+
+def test_convert_refuses_an_empty_ddl_file(sample_config_path: Path, tmp_path: Path) -> None:
+    # A silently-failed mysqldump leaves an empty file, and a "0 hits" report on
+    # it is indistinguishable from a schema that needed no conversion.
+    empty = tmp_path / "empty.sql"
+    empty.write_text("")
+    result = CliRunner().invoke(
+        main, ["convert", "--ddl-file", str(empty), "--config", str(sample_config_path)]
+    )
+    assert result.exit_code != 0
+    assert "no CREATE TABLE statements" in result.output
+
+
+def test_convert_refuses_a_ddl_file_with_only_comments(
+    sample_config_path: Path, tmp_path: Path
+) -> None:
+    f = tmp_path / "comments.sql"
+    f.write_text("-- CREATE TABLE t (id INT);\n/* CREATE TABLE u (id INT); */\n")
+    result = CliRunner().invoke(
+        main, ["convert", "--ddl-file", str(f), "--config", str(sample_config_path)]
+    )
+    assert result.exit_code != 0
+    assert "no CREATE TABLE statements" in result.output
